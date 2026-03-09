@@ -42,7 +42,7 @@ Python file containing the model implementation.
 Jupyter notebook that showcases how to compute the model for a given test cosmology and compare it to simulated data.
 
 **sim-data/**  
-Directory containing the angular simulation data used to estimate and validate the model.
+Directory containing the simulation data used to estimate and validate the model.
 These spectra are computed using the N-body code 'gevolution' (https://github.com/gevolution-code/gevolution-1.3)
 
 **environment.yml**  
