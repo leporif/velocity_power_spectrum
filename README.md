@@ -62,20 +62,21 @@ cd velocity-divergence-model
 conda env create -f environment.yml
 ```
 
-2. **Activate the environment** :
+3. **Activate the environment** :
 
 ```bash
 conda activate env-velocity
 ```
 
-3. **Add the environment as a Jupyter kernel** :
+4. **Add the environment as a Jupyter kernel** :
 
 ```bash
 python -m ipykernel install --user --name kernel-velocity --display-name "kernel-velocity"
 ```
-4. **Launch Jupyter Notebook or JupyterLab** and select the kernel kernel-velocity.
+5. **Launch Jupyter Notebook or JupyterLab** and select the kernel kernel-velocity.
 
 ## Acknowledgements
 
 The code provided in this repository uses the CLASS cosmology code (http://class-code.net/).
+
 The simulated power spectra are computed using the N-body code 'gevolution' (https://github.com/gevolution-code/gevolution-1.3).
