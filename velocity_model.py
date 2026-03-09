@@ -131,6 +131,8 @@ def compute_class_background_from_h_As(h_val, A_s, z=0.0):
 # A_s values are fixed to the fiducial value.
 import numpy as np
 import os
+from scipy.interpolate import CubicSpline
+
 
 # --- User input ---
 base_fiducial = 'sim-data/h-deriv/h_0.67556_As_2.215e-9/'
@@ -174,7 +176,25 @@ h_folders = [
 
 # Your h values
 h_values = [0.64178, 0.65867, 0.69245, 0.70934]
-As_values = np.array([2.11371e-09, 2.16425e-09, 2.26630e-09, 2.31769e-09])
+As_values = np.array([A_s]*len(h_values))  # A_s values fixed to the fiducial value
+
+# --- Precompute CLASS background at low z for spline extrapolation ---
+z_grid = np.linspace(0.0, 0.2, 11)  # z = 0.0, 0.02, ..., 0.2
+
+# Precompute Hconf and f_growth splines for each h and As
+H_splines = {}
+f_splines = {}
+
+for h_val, As_val in zip(h_values, As_values):
+    H_vals, f_vals = [], []
+    for z0 in z_grid:
+        Hz, fz = compute_class_background_from_h_As(h_val, As_val, z=z0)
+        H_vals.append(Hz)
+        f_vals.append(fz)
+    
+    H_splines[h_val] = CubicSpline(z_grid, H_vals, extrapolate=True)
+    f_splines[h_val] = CubicSpline(z_grid, f_vals, extrapolate=True)
+
 
 # --- Read all data ---
 all_der_h = {}
@@ -222,8 +242,8 @@ for h, z_vals in zip(h_values, z_arrays):
 # --- Compute dP/dh for each redshift and spectrum ---
 derivatives_h = {}
 
-# Loop through index_z = 3, 2, 1, 0
-for index_z in range(3, -1, -1):
+# Loop through index_z = 20, 19, ..., 0
+for index_z in range(20, -1, -1):
     z_fid = zfid_arr[index_z]
     dP_dh_dict = {}
 
@@ -238,8 +258,13 @@ for index_z in range(3, -1, -1):
         z = list(redshift_data[h_val].values())[index_z]
         results = all_der_h[f"h={h_val:.5f}"]
 
-        # --- CLASS quantities for this h
-        Hconf, f_growth = compute_class_background_from_h_As(h_val, As_val, z=z)
+        if z >= 0:
+            # Standard computation
+            Hconf, f_growth = compute_class_background_from_h_As(h_val, As_val, z=z)
+        else:
+            # Use cubic spline to extrapolate to negative redshift
+            Hconf = H_splines[h_val](z)
+            f_growth = f_splines[h_val](z)
         
         # --- Simulation spectrum
         # Velocity power spectra are normalized by the factor (Hconf*f_growth)^2, so that they coincide with the density spectrum at linear order. 
@@ -300,13 +325,14 @@ deriv_theta_interp = RegularGridInterpolator(
     (sigma_grid, logk_grid),
     Dtheta_grid,
     bounds_error=False,
-    fill_value=None
+    fill_value=None  # allow extrapolation along sigma
 )
 
 def dPtheta_dh_at_sigma(k, sigma_fixed):
     """
-    Compute dP_theta/dh at fixed sigma for multiple k values.
-    
+    Compute dP_theta/dh at fixed sigma for multiple k values,
+    extrapolate in sigma, but set to zero for logk outside grid.
+
     Parameters
     ----------
     k : array-like
@@ -324,7 +350,14 @@ def dPtheta_dh_at_sigma(k, sigma_fixed):
     logk = np.log(k)
 
     points = np.column_stack([sigma_array, logk])
-    return deriv_theta_interp(points)
+    values = deriv_theta_interp(points)
+
+    # Mask points where logk is outside the grid and set to zero
+    logk_min, logk_max = logk_grid[0], logk_grid[-1]
+    outside_mask = (logk < logk_min) | (logk > logk_max)
+    values[outside_mask] = 0.0
+
+    return values
 
 # -----------------------------
 # Window functions
