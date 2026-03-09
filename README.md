@@ -21,7 +21,7 @@ The model combines:
 - a nonlinear damping calibrated in the fiducial cosmology
 
 The model predicts
-$P_{\theta\theta}(k, z)/(\mathcal{H}(z)f(z))^2$, where $(\mathcal{H}(z)$ and $f(z)$ are the conformal Hubble factor and the linear growth rate, respectively. This quantity reduces to the matter power spectrum in linear theory.
+$P_{\theta\theta}(k, z)/[\mathcal{H}(z)f(z)]^2$, where $\mathcal{H}(z)$ and $f(z)$ are the conformal Hubble factor and the linear growth rate, respectively. This quantity reduces to the matter power spectrum in linear theory.
 
 ## Repository Structure
 
