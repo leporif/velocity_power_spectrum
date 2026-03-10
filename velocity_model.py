@@ -383,32 +383,66 @@ def sigma_R(cosmo, R_mpc, z=0.0):
     integral = integrate.quad(integrand, 1e-4, 100, limit=200)[0]
     return np.sqrt(integral / (2 * np.pi**2))
 
-def compute_sigma12(A_s, h, omega_cdm, R=12.0, z=0):
-    """
-    Compute sigma_12 for a given cosmology.
-    """
-
+def compute_sigma12(A_s_x, h_x, omega_cdm_x, R=12.0, z=0.0):
+    """Compute sigma_12 for given A_s, h and omega_cdm."""
     params = {
-        'output': 'mPk',
-        'h': h,
-        'omega_b': 0.02203,
-        'omega_cdm': omega_cdm,
-        'A_s': A_s,
-        'n_s': 0.9619,
-        'P_k_max_1/Mpc': 100,
-        'z_max_pk': 5
+            'h': h_x,
+            'omega_b': omega_b,
+            'omega_cdm': omega_cdm_x,
+            'k_pivot': k_pivot,
+            'A_s': A_s_x,
+            'n_s': n_s,
+            'T_cmb': T_cmb,
+            'N_ur': N_ur,
+            'output': 'mPk',
+            'z_pk': str(z),
+            'P_k_max_h/Mpc': 300.0,
+            'non_linear': 'no'
     }
-
     cosmo = Class()
     cosmo.set(params)
     cosmo.compute()
-
-    sig = sigma_R(cosmo, R, z)
-
+    sigma12 = sigma_R(cosmo, R, z)
     cosmo.struct_cleanup()
     cosmo.empty()
+    return sigma12
 
-    return sig
+def compute_sigma12_extrapolated(A_s_x, h_x, omega_cdm_x, R=12.0, z=0.0, dz=5e-2):
+    """
+    Compute sigma_12 for given cosmology.
+    If z < 0, extrapolate from z=0 using a small step derivative approximation.
+    
+    Parameters
+    ----------
+    A_s_x, h_x, omega_cdm_x : float
+        Cosmological parameters
+    R : float
+        Scale in Mpc
+    z : float
+        Redshift (can be negative for extrapolation)
+    dz : float
+        Small step to estimate derivative at z=0
+    
+    Returns
+    -------
+    sigma12 : float
+        Value of sigma_12
+    """
+    
+    if z >= 0.0:
+        # Normal CLASS call
+        return compute_sigma12(A_s_x, h_x, omega_cdm_x, R=R, z=z)
+    else:
+        # Compute sigma12 at z=0 and at a tiny step z=dz
+        sigma0 = compute_sigma12(A_s_x, h_x, omega_cdm_x, R=R, z=0.0)
+        sigma_dz = compute_sigma12(A_s_x, h_x, omega_cdm_x, R=R, z=dz)
+        
+        # Estimate derivative d(sigma)/dz at z=0
+        dsig_dz = (sigma_dz - sigma0) / dz
+        
+        # Linear extrapolation for z < 0
+        sigma_extrap = sigma0 + dsig_dz * z  # z is negative, so extrapolate
+        return sigma_extrap
 
 # ----------------------------------------------------------
 # Model ratio of nonlinear spectra with different omega_cdm
@@ -457,7 +491,7 @@ def model_ratio_fid(k, sigma12, k_high, beta, k_low, alpha):
 # -----------------------------
 
 def find_z_tilde(sigma12_target, A_s_ref, h_ref, omega_cdm_ref,
-                 R=12.0, z_min=0.0, z_max=3.0,
+                 R=12.0, z_min=-0.5, z_max=3.0,
                  xtol=1e-8, rtol=1e-10):
     
     """
@@ -469,7 +503,7 @@ def find_z_tilde(sigma12_target, A_s_ref, h_ref, omega_cdm_ref,
     """
 
     def sigma_diff(z):
-        return compute_sigma12(A_s_ref, h_ref, omega_cdm_ref, R=R, z=z) - sigma12_target
+        return compute_sigma12_extrapolated(A_s_ref, h_ref, omega_cdm_ref, R=R, z=z) - sigma12_target
 
     f_min = sigma_diff(z_min)
     f_max = sigma_diff(z_max)
@@ -529,7 +563,7 @@ def Pk_theta_nl_mod(k, z, h, omega_cdm,
                               k0=0.1394664702344858, alpha=2.0557375287321715)
 
      # Non-linear damping
-    sigma12_val_fid = compute_sigma12(A_s_ref, h_ref, omega_cdm_ref, R=12.0, z=z_tilde)
+    sigma12_val_fid = compute_sigma12_extrapolated(A_s_ref, h_ref, omega_cdm_ref, R=12.0, z=z_tilde)
     ratio_fid = model_ratio_fid(k, sigma12_val_fid, 
                                 k_high=0.9940, beta=1.5239, k_low=0.0655, alpha=4.9082)
     # Nonlinear P_theta/(Hconf*f)^2 model
