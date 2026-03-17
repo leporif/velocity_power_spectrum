@@ -178,34 +178,31 @@ h_folders = [
 h_values = [0.64178, 0.65867, 0.69245, 0.70934]
 As_values = np.array([A_s]*len(h_values))  # A_s values fixed to the fiducial value
 
-# --- Precompute CLASS background at low z for spline extrapolation ---
-z_grid = np.linspace(0.0, 0.2, 11)  # z = 0.0, 0.02, ..., 0.2
-
-# Precompute Hconf and f_growth splines for each h and As
-H_splines = {}
-f_splines = {}
-
-for h_val, As_val in zip(h_values, As_values):
-    H_vals, f_vals = [], []
-    for z0 in z_grid:
-        Hz, fz = compute_class_background_from_h_As(h_val, As_val, z=z0)
-        H_vals.append(Hz)
-        f_vals.append(fz)
-    
-    H_splines[h_val] = CubicSpline(z_grid, H_vals, extrapolate=True)
-    f_splines[h_val] = CubicSpline(z_grid, f_vals, extrapolate=True)
+# Module-level cache for derivative interpolator (lazy-built)
+_derivatives_ready = False
+_deriv_theta_interp = None
+_derivatives_h = None
+_sigma_grid = None
+_logk_grid = None
 
 
-# --- Read all data ---
-all_der_h = {}
-all_der_h[f"fiducial={h_fid:.5f}"] = read_gevolution_outputs(base_fiducial, h_fid)
+# Defaults / grids used by the derivative routine (kept as module-level defaults)
+zfid_arr = np.array([2.0, 1.9, 1.8, 1.7, 1.6, 1.5, 1.4, 1.3, 1.2, 1.1,
+                     1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0])
+dh = 0.025 * 0.67556
 
-for val, folder in zip(h_values, h_folders):
-    path_var = os.path.join(base_h_folder, folder)
-    all_der_h[f"h={val:.5f}"] = read_gevolution_outputs(path_var, val)
+# Your h folders and values used for finite differences (defaults kept)
+h_folders = [
+    "h_0.64178_As_2.215e-9",
+    "h_0.65867_As_2.215e-9",
+    "h_0.69245_As_2.215e-9",
+    "h_0.70934_As_2.215e-9",
+]
 
+h_values = [0.64178, 0.65867, 0.69245, 0.70934]
+As_values = np.array([A_s]*len(h_values))
 
-# Your sigma_12 values (pre-computed for the fiducial cosmology at the z values in zfid_arr)
+# Precomputed fiducial sigma12 values at zfid_arr
 sigma12_fid = np.array([
     0.35155175, 0.36312531, 0.37544780, 0.38858837, 0.40262385,
     0.41763932, 0.43372919, 0.45099765, 0.46955930, 0.48953958,
@@ -214,7 +211,7 @@ sigma12_fid = np.array([
     0.84087914
 ])
 
-# Pk_redshifts array: each row corresponds to a different h value, and contains the redshifts corresponding to the sigma_12 values in sigma12_fid, for that h value.
+# Pk_redshifts array: strings of redshifts for each h value
 Pk_redshifts = [
     "2.0062, 1.9066, 1.8071, 1.7076, 1.6082, 1.5088, 1.4095, 1.3103, 1.2112, 1.1122, 1.0134, 0.9147, 0.8163, 0.7180, 0.6200, 0.5224, 0.4251, 0.3284, 0.2322, 0.1367, 0.0419",
     "2.0031, 1.9034, 1.8036, 1.7038, 1.6041, 1.5045, 1.4048, 1.3052, 1.2057, 1.1062, 1.0068, 0.9075, 0.8082, 0.7091, 0.6102, 0.5114, 0.4128, 0.3144, 0.2164, 0.1187, 0.0215",
@@ -222,138 +219,178 @@ Pk_redshifts = [
     "1.9935, 1.8930, 1.7925, 1.6920, 1.5914, 1.4907, 1.3900, 1.2891, 1.1882, 1.0871, 0.9858, 0.8844, 0.7828, 0.6809, 0.5787, 0.4762, 0.3732, 0.2697, 0.1654, 0.0603, -0.0458",
 ]
 
-# Convert strings → numeric arrays
-z_arrays = [np.array([float(x) for x in row.split(",")]) for row in Pk_redshifts]
-# Sanity check
-assert len(h_values) == len(z_arrays)
-assert len(sigma12_fid) == len(z_arrays[0])
+def compute_derivatives_h(base_fiducial=base_fiducial,
+                          base_h_folder=base_h_folder,
+                          h_fid=h_fid,
+                          h_values=h_values,
+                          As_values=As_values,
+                          h_folders=h_folders,
+                          dh=dh,
+                          zfid_arr=zfid_arr,
+                          sigma12_fid=sigma12_fid,
+                          Pk_redshifts=Pk_redshifts):
+    """Compute derivatives dP/dh from simulation outputs and CLASS backgrounds.
 
-# Build lookup table
-redshift_data = {}
+    This is the heavy routine that used to run at import time. It is now
+    encapsulated so callers can build the interpolator only when needed.
+    Returns the `derivatives_h` dictionary.
+    """
+    # Convert Pk_redshifts strings → numeric arrays
+    z_arrays = [np.array([float(x) for x in row.split(',')]) for row in Pk_redshifts]
 
-for h, z_vals in zip(h_values, z_arrays):
+    # Sanity check
+    assert len(h_values) == len(z_arrays)
+    assert len(sigma12_fid) == len(z_arrays[0])
 
-    # Map sigma_12 → redshift
-    redshift_data[h] = {
-        float(f"{sigma:.6f}"): float(f"{z:.6f}")
-        for sigma, z in zip(sigma12_fid, z_vals)
-    }
+    # Build lookup table
+    redshift_data = {}
+    for h, z_vals in zip(h_values, z_arrays):
+        redshift_data[h] = {
+            float(f"{sigma:.6f}"): float(f"{z:.6f}")
+            for sigma, z in zip(sigma12_fid, z_vals)
+        }
 
-# --- Compute dP/dh for each redshift and spectrum ---
-derivatives_h = {}
-
-# Loop through index_z = 20, 19, ..., 0
-for index_z in range(20, -1, -1):
-    z_fid = zfid_arr[index_z]
-    dP_dh_dict = {}
-
-    # Collect spectra and background quantities for this redshift
-    k_vals = None
-    P_spectra_theta = []
-    P_spectra_vort = []
-    P_spectra_vel = []
-    P_spectra_delta = []
-    
+    # --- Precompute CLASS background at low z for spline extrapolation ---
+    z_grid = np.linspace(0.0, 0.2, 11)
+    H_splines = {}
+    f_splines = {}
     for h_val, As_val in zip(h_values, As_values):
-        z = list(redshift_data[h_val].values())[index_z]
-        results = all_der_h[f"h={h_val:.5f}"]
+        H_vals, f_vals = [], []
+        for z0 in z_grid:
+            Hz, fz = compute_class_background_from_h_As(h_val, As_val, z=z0)
+            H_vals.append(Hz)
+            f_vals.append(fz)
+        H_splines[h_val] = CubicSpline(z_grid, H_vals, extrapolate=True)
+        f_splines[h_val] = CubicSpline(z_grid, f_vals, extrapolate=True)
 
-        if z >= 0:
-            # Standard computation
-            Hconf, f_growth = compute_class_background_from_h_As(h_val, As_val, z=z)
-        else:
-            # Use cubic spline to extrapolate to negative redshift
-            Hconf = H_splines[h_val](z)
-            f_growth = f_splines[h_val](z)
-        
-        # --- Simulation spectrum
-        # Velocity power spectra are normalized by the factor (Hconf*f_growth)^2, so that they coincide with the density spectrum at linear order. 
-        k = results[z_fid]["k_vort"]*h_val
-        Pk_vort = results[z_fid]["Pk_vort"]
-        Pk_theta = results[z_fid]["Pk_theta"]
-        Pk_delta = results[z_fid]["Pk_delta"]
-        spec_theta = (Pk_theta)/(Hconf * f_growth)**2/h_val**3
-        spec_vort = (Pk_vort)/(Hconf * f_growth)**2/h_val**3
-        spec_vel = (Pk_theta+Pk_vort)/(Hconf * f_growth)**2/h_val**3
-        spec_delta = Pk_delta/h_val**3
+    # --- Read all data ---
+    all_der_h = {}
+    all_der_h[f"fiducial={h_fid:.5f}"] = read_gevolution_outputs(base_fiducial, h_fid)
+    for val, folder in zip(h_values, h_folders):
+        path_var = os.path.join(base_h_folder, folder)
+        all_der_h[f"h={val:.5f}"] = read_gevolution_outputs(path_var, val)
 
-        P_spectra_theta.append(spec_theta)
-        P_spectra_vort.append(spec_vort)
-        P_spectra_vel.append(spec_vel)
-        P_spectra_delta.append(spec_delta)
+    # --- Compute dP/dh for each redshift and spectrum ---
+    derivatives_h = {}
+    # Loop through index_z = 20, 19, ..., 0
+    for index_z in range(len(zfid_arr)-1, -1, -1):
+        z_fid = zfid_arr[index_z]
 
-        
-    #print(P_spectra_theta[0], P_spectra_theta[1], P_spectra_theta[2], P_spectra_theta[3])
-        
-    dPtheta_dh = (-P_spectra_theta[3] + 8.0*P_spectra_theta[2] - 8.0*P_spectra_theta[1] + P_spectra_theta[0])/(12.0*dh)
-    dPvort_dh = (-P_spectra_vort[3] + 8.0*P_spectra_vort[2] - 8.0*P_spectra_vort[1] + P_spectra_vort[0])/(12.0*dh)
-    dPvel_dh = (-P_spectra_vel[3] + 8.0*P_spectra_vel[2] - 8.0*P_spectra_vel[1] + P_spectra_vel[0])/(12.0*dh)
-    dPdelta_dh = (-P_spectra_delta[3] + 8.0*P_spectra_delta[2] - 8.0*P_spectra_delta[1] + P_spectra_delta[0])/(12.0*dh)
-    
-    # Store
-    derivatives_h[f"z_index_{index_z}"] = {
-        "k": k,
-        "dPtheta_dh": dPtheta_dh,
-        "dPvort_dh": dPvort_dh,
-        "dPvel_dh": dPvel_dh,
-        "dPdelta_dh": dPdelta_dh,
-    }     
+        P_spectra_theta = []
+        P_spectra_vort = []
+        P_spectra_vel = []
+        P_spectra_delta = []
 
-print('Derivatives with respect to h computed successfully.')
+        for h_val, As_val in zip(h_values, As_values):
+            # Deterministic lookup: map sigma (from fiducial grid) -> redshift
+            sigma = sigma12_fid[index_z]
+            key = float(f"{sigma:.6f}")
+            # Prefer exact formatted key; if missing, pick nearest available sigma key
+            if key in redshift_data[h_val]:
+                z = redshift_data[h_val][key]
+            else:
+                # fallback: choose nearest sigma key to avoid ordering issues
+                available = np.array(list(redshift_data[h_val].keys()))
+                idx_nearest = np.argmin(np.abs(available - sigma))
+                nearest_key = float(f"{available[idx_nearest]:.6f}")
+                z = redshift_data[h_val][nearest_key]
+            results = all_der_h[f"h={h_val:.5f}"]
 
-import numpy as np
-from scipy.interpolate import RegularGridInterpolator
+            if z >= 0:
+                Hconf, f_growth = compute_class_background_from_h_As(h_val, As_val, z=z)
+            else:
+                Hconf = H_splines[h_val](z)
+                f_growth = f_splines[h_val](z)
 
-# Sort indices to ensure consistent order
-indices = sorted([int(key.split("_")[-1]) for key in derivatives_h.keys()])
+            k = results[z_fid]["k_vort"] * h_val
+            Pk_vort = results[z_fid]["Pk_vort"]
+            Pk_theta = results[z_fid]["Pk_theta"]
+            Pk_delta = results[z_fid]["Pk_delta"]
+            spec_theta = (Pk_theta) / (Hconf * f_growth)**2 / h_val**3
+            spec_vort = (Pk_vort) / (Hconf * f_growth)**2 / h_val**3
+            spec_vel = (Pk_theta + Pk_vort) / (Hconf * f_growth)**2 / h_val**3
+            spec_delta = Pk_delta / h_val**3
 
-# sigma_12 values corresponding to the indices
-sigma_grid = np.array([sigma12_fid[i] for i in indices])
+            P_spectra_theta.append(spec_theta)
+            P_spectra_vort.append(spec_vort)
+            P_spectra_vel.append(spec_vel)
+            P_spectra_delta.append(spec_delta)
 
-# k grid (assume identical for all sigma)
-k_grid = derivatives_h[f"z_index_{indices[0]}"]["k"]
+        dPtheta_dh = (-P_spectra_theta[3] + 8.0*P_spectra_theta[2] - 8.0*P_spectra_theta[1] + P_spectra_theta[0]) / (12.0*dh)
+        dPvort_dh = (-P_spectra_vort[3] + 8.0*P_spectra_vort[2] - 8.0*P_spectra_vort[1] + P_spectra_vort[0]) / (12.0*dh)
+        dPvel_dh = (-P_spectra_vel[3] + 8.0*P_spectra_vel[2] - 8.0*P_spectra_vel[1] + P_spectra_vel[0]) / (12.0*dh)
+        dPdelta_dh = (-P_spectra_delta[3] + 8.0*P_spectra_delta[2] - 8.0*P_spectra_delta[1] + P_spectra_delta[0]) / (12.0*dh)
 
-# Build 2D array of dPtheta/dh
-Dtheta_grid = np.array([
-    derivatives_h[f"z_index_{i}"]["dPtheta_dh"]
-    for i in indices
-])  # shape = (N_sigma, N_k)
+        derivatives_h[f"z_index_{index_z}"] = {
+            "k": k,
+            "dPtheta_dh": dPtheta_dh,
+            "dPvort_dh": dPvort_dh,
+            "dPvel_dh": dPvel_dh,
+            "dPdelta_dh": dPdelta_dh,
+        }
 
-logk_grid = np.log(k_grid)
+    return derivatives_h
 
-deriv_theta_interp = RegularGridInterpolator(
-    (sigma_grid, logk_grid),
-    Dtheta_grid,
-    bounds_error=False,
-    fill_value=None  # allow extrapolation along sigma
-)
+
+def build_deriv_interpolator(derivatives_h):
+    """Build a RegularGridInterpolator for dP_theta/dh from derivatives_h dict.
+    Returns (deriv_theta_interp, sigma_grid, logk_grid).
+    """
+    # Sort indices to ensure consistent order
+    indices = sorted([int(key.split("_")[-1]) for key in derivatives_h.keys()])
+
+    # sigma_12 values corresponding to the indices
+    sigma_grid = np.array([sigma12_fid[i] for i in indices])
+
+    # k grid (assume identical for all sigma)
+    k_grid = derivatives_h[f"z_index_{indices[0]}"]["k"]
+
+    # Build 2D array of dPtheta/dh
+    Dtheta_grid = np.array([
+        derivatives_h[f"z_index_{i}"]["dPtheta_dh"]
+        for i in indices
+    ])  # shape = (N_sigma, N_k)
+
+    logk_grid = np.log(k_grid)
+
+    deriv_theta_interp = RegularGridInterpolator(
+        (sigma_grid, logk_grid),
+        Dtheta_grid,
+        bounds_error=False,
+        fill_value=None  # allow extrapolation along sigma
+    )
+
+    return deriv_theta_interp, sigma_grid, logk_grid
+
+
+def prepare_derivatives():
+    """Lazy prepare derivative interpolator and cache it in module-level variables."""
+    global _derivatives_ready, _deriv_theta_interp, _derivatives_h, _sigma_grid, _logk_grid
+    if _derivatives_ready:
+        return
+
+    # Compute derivatives and build interpolator (this is the expensive part)
+    _derivatives_h = compute_derivatives_h()
+    _deriv_theta_interp, _sigma_grid, _logk_grid = build_deriv_interpolator(_derivatives_h)
+    _derivatives_ready = True
 
 def dPtheta_dh_at_sigma(k, sigma_fixed):
-    """
-    Compute dP_theta/dh at fixed sigma for multiple k values,
-    extrapolate in sigma, but set to zero for logk outside grid.
+    """Compute dP_theta/dh at fixed sigma for multiple k values.
 
-    Parameters
-    ----------
-    k : array-like
-        Wavenumbers
-    sigma_fixed : float
-        Fixed sigma value
-
-    Returns
-    -------
-    dPtheta_dh : array
-        Values of dP_theta/dh at given k and fixed sigma
+    This function will lazily prepare and cache the derivative interpolator
+    on first use (so the expensive computation is not done at import).
     """
+    prepare_derivatives()
+
     k = np.atleast_1d(k)
     sigma_array = np.full_like(k, sigma_fixed)
     logk = np.log(k)
 
     points = np.column_stack([sigma_array, logk])
-    values = deriv_theta_interp(points)
+    values = _deriv_theta_interp(points)
 
     # Mask points where logk is outside the grid and set to zero
-    logk_min, logk_max = logk_grid[0], logk_grid[-1]
+    logk_min, logk_max = _logk_grid[0], _logk_grid[-1]
     outside_mask = (logk < logk_min) | (logk > logk_max)
     values[outside_mask] = 0.0
 
