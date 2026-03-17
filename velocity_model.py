@@ -7,9 +7,12 @@ Author: Francesca Lepori
 """
 
 import numpy as np
+import os
 from scipy import integrate
 from scipy.interpolate import RegularGridInterpolator
+from scipy.interpolate import CubicSpline
 from scipy.optimize import brentq
+
 from classy import Class
 
 # Routine that reads the gevolution outputs for the velocity divergence, vorticity and density power spectra, 
@@ -76,8 +79,6 @@ def read_gevolution_outputs(path, h, redshifts=redshifts):
         }
     return results
 
-from classy import Class
-
 k_pivot = 0.05                      # in units of inverse Mpc (not h/Mpc!)
 A_s = 2.215e-9
 n_s = 0.9619
@@ -129,10 +130,6 @@ def compute_class_background_from_h_As(h_val, A_s, z=0.0):
 # We estimate derivatives at fixed sigma_12, so we need to build a lookup table that maps sigma_12 --> redshift for each h value, 
 # using the pre-computed Pk_redshifts array.
 # A_s values are fixed to the fiducial value.
-import numpy as np
-import os
-from scipy.interpolate import CubicSpline
-
 
 # --- User input ---
 base_fiducial = 'sim-data/h-deriv/h_0.67556_As_2.215e-9/'
@@ -420,8 +417,60 @@ def sigma_R(cosmo, R_mpc, z=0.0):
     integral = integrate.quad(integrand, 1e-4, 100, limit=200)[0]
     return np.sqrt(integral / (2 * np.pi**2))
 
-def compute_sigma12(A_s_x, h_x, omega_cdm_x, R=12.0, z=0.0):
-    """Compute sigma_12 for given A_s, h and omega_cdm."""
+def compute_sigma12(A_s_x, h_x, omega_cdm_x, R=12.0, z=0.0, give_growth=False,
+                    growth_zmin=0.0, growth_zmax=3.0, growth_nz=201):
+    """Compute sigma_12 for given A_s, h and omega_cdm.
+
+    If `give_growth` is False (default) the function returns a scalar sigma12 at
+    redshift `z` (computed with CLASS). If `give_growth` is True the function
+    returns a tuple `(sigma12, D_spline)` where `D_spline` is a CubicSpline that
+    evaluates the linear growth factor D(z)/D(0) at arbitrary redshift.
+
+    Parameters
+    ----------
+    growth_zmin, growth_zmax, growth_nz : float,int
+        Grid used to compute the growth spline when `give_growth` is True.
+    """
+    # If growth interpolator requested, ask CLASS to compute background on a z-grid
+    if give_growth:
+        z_grid = np.linspace(growth_zmin, growth_zmax, growth_nz)
+        #z_pk_str = ','.join([f"{zz:.6f}" for zz in z_grid])
+        params = {
+            'h': h_x,
+            'omega_b': omega_b,
+            'omega_cdm': omega_cdm_x,
+            'k_pivot': k_pivot,
+            'A_s': A_s_x,
+            'n_s': n_s,
+            'T_cmb': T_cmb,
+            'N_ur': N_ur,
+            'output': 'mPk',
+            'z_pk': f"{growth_zmin},{z},{growth_zmax}",
+            'P_k_max_h/Mpc': 300.0,
+            'non_linear': 'no'
+        }
+        cosmo = Class()
+        cosmo.set(params)
+        cosmo.compute()
+
+        # sigma at requested z
+        sigma12 = sigma_R(cosmo, R, z)
+
+        # build growth factor grid and spline (normalize to D(0)=1)
+        D_vals = np.array([cosmo.scale_independent_growth_factor(zz) for zz in z_grid])
+        # normalize so D(0)=1 (find index closest to z=0)
+        idx0 = np.argmin(np.abs(z_grid - 0.0))
+        D_vals = D_vals / float(D_vals[idx0])
+
+        from scipy.interpolate import CubicSpline as _CubicSpline
+        D_spline = _CubicSpline(z_grid, D_vals, extrapolate=True)
+
+        cosmo.struct_cleanup()
+        cosmo.empty()
+
+        return sigma12, D_spline
+
+    # Default: only compute sigma12 at single z
     params = {
             'h': h_x,
             'omega_b': omega_b,
@@ -443,43 +492,6 @@ def compute_sigma12(A_s_x, h_x, omega_cdm_x, R=12.0, z=0.0):
     cosmo.struct_cleanup()
     cosmo.empty()
     return sigma12
-
-def compute_sigma12_extrapolated(A_s_x, h_x, omega_cdm_x, R=12.0, z=0.0, dz=5e-2):
-    """
-    Compute sigma_12 for given cosmology.
-    If z < 0, extrapolate from z=0 using a small step derivative approximation.
-    
-    Parameters
-    ----------
-    A_s_x, h_x, omega_cdm_x : float
-        Cosmological parameters
-    R : float
-        Scale in Mpc
-    z : float
-        Redshift (can be negative for extrapolation)
-    dz : float
-        Small step to estimate derivative at z=0
-    
-    Returns
-    -------
-    sigma12 : float
-        Value of sigma_12
-    """
-    
-    if z >= 0.0:
-        # Normal CLASS call
-        return compute_sigma12(A_s_x, h_x, omega_cdm_x, R=R, z=z)
-    else:
-        # Compute sigma12 at z=0 and at a tiny step z=dz
-        sigma0 = compute_sigma12(A_s_x, h_x, omega_cdm_x, R=R, z=0.0)
-        sigma_dz = compute_sigma12(A_s_x, h_x, omega_cdm_x, R=R, z=dz)
-        
-        # Estimate derivative d(sigma)/dz at z=0
-        dsig_dz = (sigma_dz - sigma0) / dz
-        
-        # Linear extrapolation for z < 0
-        sigma_extrap = sigma0 + dsig_dz * z  # z is negative, so extrapolate
-        return sigma_extrap
 
 # ----------------------------------------------------------
 # Model ratio of nonlinear spectra with different omega_cdm
@@ -539,8 +551,12 @@ def find_z_tilde(sigma12_target, A_s_ref, h_ref, omega_cdm_ref,
      - z_min, z_max: search range for redshift
     """
 
+    # Request the growth interpolator so compute_sigma12 returns (sigma12_at_z0, D_spline)
+    sigma12_z0, D_growth_spline = compute_sigma12(A_s_ref, h_ref, omega_cdm_ref, R=12.0, z=0.0, give_growth=True)
+        
     def sigma_diff(z):
-        return compute_sigma12_extrapolated(A_s_ref, h_ref, omega_cdm_ref, R=R, z=z) - sigma12_target
+        sigma_12_z = sigma12_z0*D_growth_spline(z)
+        return sigma_12_z - sigma12_target
 
     f_min = sigma_diff(z_min)
     f_max = sigma_diff(z_max)
@@ -558,7 +574,8 @@ def find_z_tilde(sigma12_target, A_s_ref, h_ref, omega_cdm_ref,
 
 def Pk_theta_nl_mod(k, z, h, omega_cdm,
                     pktheta_fid_interp, pktheta_omega_cdm_interp,
-                    A_s_ref, omega_cdm_ref, h_ref, deriv = True):
+                    A_s_ref, omega_cdm_ref, h_ref, deriv=True,
+                    deriv_interp=None):
     """
     Non-linear velocity power spectrum for a single redshift.
 
@@ -600,19 +617,47 @@ def Pk_theta_nl_mod(k, z, h, omega_cdm,
                               k0=0.1394664702344858, alpha=2.0557375287321715)
 
      # Non-linear damping
-    sigma12_val_fid = compute_sigma12_extrapolated(A_s_ref, h_ref, omega_cdm_ref, R=12.0, z=z_tilde)
+    sigma12_val_fid_z0, D_growth_spline = compute_sigma12(A_s_ref, h_ref, omega_cdm_ref, R=12.0, z=0.0, give_growth=True)
+    sigma12_val_fid = sigma12_val_fid_z0*D_growth_spline(z_tilde)
     ratio_fid = model_ratio_fid(k, sigma12_val_fid, 
                                 k_high=0.9940, beta=1.5239, k_low=0.0655, alpha=4.9082)
     # Nonlinear P_theta/(Hconf*f)^2 model
     Pk_theta_nl = ratio_nl * ratio_fid * pktheta_fid_interp(points_tilde) 
     
-    # Add derivative term if requested
+    # Add derivative term if requested. The user can pass a pre-built
+    # derivative interpolator (deriv_interp) to avoid computing derivatives
+    # lazily inside the module. `deriv_interp` may be either:
+    #  - a RegularGridInterpolator that accepts points (sigma, logk)
+    #  - a tuple/list (interp, sigma_grid, logk_grid) where sigma/logk
+    #    grids are provided so we can mask out-of-range logk values.
     if deriv:
-        dPtheta_dh = dPtheta_dh_at_sigma(k, sigma_fixed=sigma12_val)
+        if deriv_interp is None:
+            # backward-compatible: compute lazily (expensive)
+            dPtheta_dh = dPtheta_dh_at_sigma(k, sigma_fixed=sigma12_val)
+        else:
+            # unpack tuple if provided
+            if isinstance(deriv_interp, (list, tuple)):
+                interp, sigma_grid_local, logk_grid_local = deriv_interp
+            else:
+                interp = deriv_interp
+                sigma_grid_local = logk_grid_local = None
+
+            logk = np.log(k)
+            sigma_array = np.full_like(k, sigma12_val)
+            pts = np.column_stack([sigma_array, logk])
+            dP_vals = interp(pts)
+
+            # If we have logk grid information, zero values outside range
+            if logk_grid_local is not None:
+                outside_mask = (logk < logk_grid_local[0]) | (logk > logk_grid_local[-1])
+                dP_vals = np.array(dP_vals, copy=True)
+                dP_vals[outside_mask] = 0.0
+
+            dPtheta_dh = dP_vals
+
         Pk_theta_nl += dPtheta_dh * (h - h_ref)
 
     return Pk_theta_nl
-
 
 # --------------------------------  
 # Interpolator for linear spectra
