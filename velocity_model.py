@@ -623,7 +623,7 @@ def Pk_ref_nl_mod(k, z, h, omega_cdm,
 
     # Ensure k is an array
     k = np.atleast_1d(k)
-    sigma12_val = compute_sigma12(A_s_ref, h, omega_cdm, R=12.0, z=z)
+    sigma12_val, D_growth_test_spline = compute_sigma12(A_s_ref, h, omega_cdm, R=12.0, z=z, give_growth=True)
     
     # Compute z_tilde such that in (A_s_ref, h_ref, omega_cdm) cosmology, sigma_12(z_tilde) = sigma_12_VAL
     z_tilde = find_z_tilde(sigma12_val, A_s_ref, h_ref, omega_cdm, R=12.0)
@@ -678,7 +678,7 @@ def Pk_ref_nl_mod(k, z, h, omega_cdm,
     
     if include_vort:
         # Add vorticity contribution if requested
-        Pk_vort = Pk_vorticity(k, z, D_growth_spline(z), h)
+        Pk_vort = Pk_vorticity(k, z, D_growth_test_spline(z), h)
         Pk_theta_nl += Pk_vort
 
     return Pk_theta_nl
