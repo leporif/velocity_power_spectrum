@@ -567,14 +567,33 @@ def find_z_tilde(sigma12_target, A_s_ref, h_ref, omega_cdm_ref,
     z_tilde = brentq(sigma_diff, z_min, z_max, xtol=xtol, rtol=rtol)
     return z_tilde
 
+def Pk_vorticity(k, z, D1, h_test):
+    """
+    k  : array [1/Mpc]
+    z  : redshift
+    D1 : linear growth factor (normalized to 1 at z=0)
+    h_test : test Hubble parameter
+    """
+
+    # Peak scale
+    kp = (1.0 + z)*h_test  # 1/Mpc
+
+    # Amplitude with growth scaling
+    P0 = 5.0 #Amplitude at z=0 (arbitrary normalization)
+    P1 = 0.6 # Amplitude at z=1 (arbitrary normalization)
+    Pk_ampl = 2.0 * P0 * (P1 / P0)**z * D1**7  # log interpolation
+    x = k / kp
+
+    return Pk_ampl * (x**2.5) / (1.0 + x**4)
+
 
 # -----------------------------
 # Nonlinear model
 # -----------------------------
 
-def Pk_theta_nl_mod(k, z, h, omega_cdm,
+def Pk_ref_nl_mod(k, z, h, omega_cdm,
                     pktheta_fid_interp, pktheta_omega_cdm_interp,
-                    A_s_ref, omega_cdm_ref, h_ref, deriv=True,
+                    A_s_ref, omega_cdm_ref, h_ref, include_vort = False, deriv=True,
                     deriv_interp=None):
     """
     Non-linear velocity power spectrum for a single redshift.
@@ -620,7 +639,7 @@ def Pk_theta_nl_mod(k, z, h, omega_cdm,
     sigma12_val_fid_z0, D_growth_spline = compute_sigma12(A_s_ref, h_ref, omega_cdm_ref, R=12.0, z=0.0, give_growth=True)
     sigma12_val_fid = sigma12_val_fid_z0*D_growth_spline(z_tilde)
     ratio_fid = model_ratio_fid(k, sigma12_val_fid, 
-                                k_high=0.9940, beta=1.5239, k_low=0.0655, alpha=4.9082)
+                                k_high=2.5802, beta=2.5175, k_low=0.0433, alpha=5.2495)
     # Nonlinear P_theta/(Hconf*f)^2 model
     Pk_theta_nl = ratio_nl * ratio_fid * pktheta_fid_interp(points_tilde) 
     
@@ -656,8 +675,15 @@ def Pk_theta_nl_mod(k, z, h, omega_cdm,
             dPtheta_dh = dP_vals
 
         Pk_theta_nl += dPtheta_dh * (h - h_ref)
+    
+    if include_vort:
+        # Add vorticity contribution if requested
+        Pk_vort = Pk_vorticity(k, z, D_growth_spline(z), h)
+        Pk_theta_nl += Pk_vort
 
     return Pk_theta_nl
+
+
 
 # --------------------------------  
 # Interpolator for linear spectra
