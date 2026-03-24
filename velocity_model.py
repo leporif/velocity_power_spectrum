@@ -567,13 +567,14 @@ def find_z_tilde(sigma12_target, A_s_ref, h_ref, omega_cdm_ref,
     z_tilde = brentq(sigma_diff, z_min, z_max, xtol=xtol, rtol=rtol)
     return z_tilde
 
+"""
 def Pk_vorticity(k, z, D1, h_test):
-    """
+    
     k  : array [1/Mpc]
     z  : redshift
     D1 : linear growth factor (normalized to 1 at z=0)
     h_test : test Hubble parameter
-    """
+    
 
     # Peak scale
     kp = (1.0 + z)*h_test  # 1/Mpc
@@ -585,7 +586,22 @@ def Pk_vorticity(k, z, D1, h_test):
     x = k / kp
 
     return Pk_ampl * (x**2.5) / (1.0 + x**4)
+"""
+# ----------------------------
+# Improved model (with plateau)
+# ----------------------------
+def Pk_vorticity(k, z, D1, h_test, a=2.5, d=1.5, alpha=1.5, b=2.5):
+    kp = (1.0 + z)*h_test
+    ks = alpha * kp
 
+    x1 = k / kp
+    x2 = k / ks
+
+    P0 = 5.0/(h_test**3)
+    P1 = 0.6/(h_test**3)
+    Pk_ampl = 2.0 * P0 * (P1 / P0)**z * D1**7
+
+    return Pk_ampl * (x1**a) / ((1 + x1**b) * (1 + x2**b)**(d/b))
 
 # -----------------------------
 # Nonlinear model
