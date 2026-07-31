@@ -1,0 +1,20 @@
+name: env-releff
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - scipy
+  - matplotlib
+  - pandas
+  - scikit-learn
+  - camb
+  - cython
+  - jupyterlab
+  - pip
+  - pip:
+      - classy==3.3.4.0
+      - torch==2.2.2
+      - pytorch-lightning==2.6.1
+      - pysr==1.5.9
+      - tqdm==4.67.3
