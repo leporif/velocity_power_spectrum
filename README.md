@@ -79,4 +79,4 @@ python -m ipykernel install --user --name kernel-velocity --display-name "kernel
 
 The code provided in this repository uses the CLASS cosmology code (http://class-code.net/).
 
-The simulated power spectra are computed using the N-body code 'gevolution' (https://github.com/gevolution-code/gevolution-1.3).
+The simulated power spectra are computed using the N-body code 'gevolution' (https://github.com/gevolution-code/gevolution-2.0).
